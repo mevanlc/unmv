@@ -1,0 +1,30 @@
+[package]
+name = "unmv"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Infer and undo a filesystem move from its original arguments"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6.7", features = ["cargo", "derive", "wrap_help"] }
+ctrlc = "3"
+filetime = "0.2"
+renamore = { git = "https://github.com/mevanlc/renamore", rev = "10c9775a6ee8246846197965f6dc67fe00357aa3" }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-raw-sys = { version = "0.12", features = ["ioctl"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

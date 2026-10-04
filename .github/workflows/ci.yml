@@ -1,0 +1,79 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      UNMV_REQUIRE_CROSS_VOLUME_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Install Zsh
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh
+      - name: Create macOS test volume
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -size 128m -fs APFS -volname UNMV-Tests "$RUNNER_TEMP/unmv-test.dmg"
+          mkdir "$RUNNER_TEMP/unmv-test-mount"
+          hdiutil attach "$RUNNER_TEMP/unmv-test.dmg" -owners on -nobrowse -mountpoint "$RUNNER_TEMP/unmv-test-mount"
+          echo "UNMV_TEST_VOLUME=$RUNNER_TEMP/unmv-test-mount" >> "$GITHUB_ENV"
+      - name: Create Windows test volume and enable symlink creation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $image = Join-Path $env:RUNNER_TEMP 'unmv-test.vhd'
+          $mount = Join-Path $env:RUNNER_TEMP 'unmv-test-mount'
+          New-Item -ItemType Directory -Path $mount | Out-Null
+          @"
+          create vdisk file="$image" maximum=128 type=expandable
+          select vdisk file="$image"
+          attach vdisk
+          create partition primary
+          format fs=ntfs label="UNMV-Tests" quick
+          assign mount="$mount"
+          exit
+          "@ | Set-Content (Join-Path $env:RUNNER_TEMP 'unmv-diskpart.txt')
+          diskpart /s (Join-Path $env:RUNNER_TEMP 'unmv-diskpart.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'diskpart failed' }
+          "UNMV_TEST_VOLUME=$mount" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          New-Item -Force -Path $key | Out-Null
+          New-ItemProperty -Force -Path $key -Name AllowDevelopmentWithoutDevLicense -PropertyType DWord -Value 1 | Out-Null
+      - run: cargo fmt --check
+      - run: cargo check --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo nextest run --locked --no-fail-fast
+      - run: cargo build --locked --release
+      - name: Detach macOS test volume
+        if: always() && runner.os == 'macOS'
+        run: hdiutil detach "$RUNNER_TEMP/unmv-test-mount"
+      - name: Detach Windows test volume
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $image = Join-Path $env:RUNNER_TEMP 'unmv-test.vhd'
+          @"
+          select vdisk file="$image"
+          detach vdisk
+          exit
+          "@ | Set-Content (Join-Path $env:RUNNER_TEMP 'unmv-diskpart-detach.txt')
+          diskpart /s (Join-Path $env:RUNNER_TEMP 'unmv-diskpart-detach.txt')
