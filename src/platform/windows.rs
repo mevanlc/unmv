@@ -264,7 +264,7 @@ fn apply_security(path: &Path, security: &Security) -> Result<()> {
     if current == *security {
         return Ok(());
     }
-    let mut access = WRITE_DAC;
+    let mut access = READ_CONTROL | WRITE_DAC;
     let mut flags = DACL_SECURITY_INFORMATION
         | if security.protected {
             PROTECTED_DACL_SECURITY_INFORMATION
@@ -292,6 +292,39 @@ fn apply_security(path: &Path, security: &Security) -> Result<()> {
         )
     };
     ensure!(code == 0, "{}", io::Error::from_raw_os_error(code as i32));
+    Ok(())
+}
+
+pub(crate) fn prepare_publication(path: &Path) -> Result<()> {
+    // Moving out of the private staging directory can protect the root's DACL
+    // and turn inherited ACEs into explicit ones. Do that while still staged,
+    // so the metadata-loss gate and subsequent exact checks see the final ACL.
+    let mut security = read_security(path)?;
+    let mut changed = !security.protected;
+    if security.dacl.length != 0 {
+        let acl = security.dacl.words.as_mut_ptr().cast::<ACL>();
+        for index in 0..unsafe { (*acl).AceCount } {
+            let mut entry = ptr::null_mut();
+            ensure!(
+                unsafe { GetAce(acl, u32::from(index), &mut entry) } != 0,
+                "cannot inspect staged DACL entry: {}",
+                io::Error::last_os_error()
+            );
+            let entry = unsafe { &mut *entry.cast::<ACE_HEADER>() };
+            if entry.AceFlags & INHERITED_ACE as u8 != 0 {
+                entry.AceFlags &= !(INHERITED_ACE as u8);
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        security.protected = true;
+        apply_security(path, &security).context("cannot prepare staged DACL for publication")?;
+        ensure!(
+            read_security(path)? == security,
+            "staged DACL differs after preparing it for publication: {path:?}"
+        );
+    }
     Ok(())
 }
 
@@ -354,7 +387,7 @@ fn apply_audit(path: &Path, audit: &Audit) -> Result<()> {
     if read_audit(path)? == *audit {
         return Ok(());
     }
-    let handle = open_handle(path, ACCESS_SYSTEM_SECURITY)?;
+    let handle = open_handle(path, READ_CONTROL | ACCESS_SYSTEM_SECURITY)?;
     let flags = AUDIT_INFORMATION
         | if audit.protected {
             PROTECTED_SACL_SECURITY_INFORMATION
@@ -798,10 +831,25 @@ impl Preserved {
         if let Err(error) = self.apply_times(path) {
             losses.push(format!("timestamps: {error:#}"));
         }
+        losses.extend(self.verify(path));
+        losses.sort();
+        losses.dedup();
+        losses
+    }
+    pub fn verify(&self, path: &Path) -> Vec<String> {
+        let mut losses = Vec::new();
         match Self::read(path) {
             Ok(actual) => {
                 if self.security.is_some() && self.security != actual.security {
                     losses.push("ownership/DACL differs after copying".into());
+                }
+                if self
+                    .security
+                    .as_ref()
+                    .zip(actual.security.as_ref())
+                    .is_some_and(|(expected, actual)| expected.protected != actual.protected)
+                {
+                    losses.push("DACL inheritance protection differs after copying".into());
                 }
                 if self.audit.is_some() && self.audit != actual.audit {
                     losses.push("SACL/audit security metadata differs after copying".into());
@@ -937,4 +985,234 @@ pub(crate) fn sync_entry(path: &Path) -> Result<()> {
 // are flushed before cleanup; this is not a power-failure transaction.
 pub(crate) fn sync_directory(_path: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Event, ExecutionOptions, Inference, Mode, Plan};
+    use tempfile::TempDir;
+
+    fn aces(security: &Security) -> Vec<Vec<u8>> {
+        let acl = security.dacl.pointer().cast::<ACL>();
+        assert!(!acl.is_null());
+        (0..unsafe { (*acl).AceCount })
+            .map(|index| {
+                let mut entry = ptr::null_mut();
+                assert_ne!(unsafe { GetAce(acl, u32::from(index), &mut entry) }, 0);
+                let header = unsafe { &*entry.cast::<ACE_HEADER>() };
+                unsafe {
+                    std::slice::from_raw_parts(entry.cast::<u8>(), usize::from(header.AceSize))
+                }
+                .to_vec()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn publication_dacl_is_stable_for_files_and_directories() {
+        for directory in [false, true] {
+            let root = TempDir::new().unwrap();
+            let source = root.path().join("source");
+            let stage = stage_directory(root.path()).unwrap();
+            let copied = stage.path().join("entry");
+            if directory {
+                fs::create_dir(&source).unwrap();
+                fs::create_dir(&copied).unwrap();
+                fs::write(source.join("child"), "payload").unwrap();
+                fs::copy(source.join("child"), copied.join("child")).unwrap();
+            } else {
+                fs::write(&source, "payload").unwrap();
+                fs::copy(&source, &copied).unwrap();
+            }
+            let original = Preserved::read(&source).unwrap();
+            original.apply(&copied);
+            let before = read_security(&copied).unwrap();
+            assert!(
+                !before.protected,
+                "fixture must exercise inherited permissions"
+            );
+            let mut expected_aces = aces(&before);
+            assert!(
+                expected_aces
+                    .iter()
+                    .any(|ace| ace[1] & INHERITED_ACE as u8 != 0)
+            );
+            for ace in &mut expected_aces {
+                ace[1] &= !(INHERITED_ACE as u8);
+            }
+
+            prepare_publication(&copied).unwrap();
+            let prepared = read_security(&copied).unwrap();
+            assert!(prepared.protected);
+            assert_eq!(prepared.owner, before.owner);
+            assert_eq!(prepared.group, before.group);
+            // Compare every ACE byte: order, access masks, SIDs and all other flags.
+            assert_eq!(aces(&prepared), expected_aces);
+            assert!(
+                original
+                    .verify(&copied)
+                    .iter()
+                    .any(|loss| loss.contains("DACL inheritance"))
+            );
+            prepare_publication(&copied).unwrap();
+            assert_eq!(read_security(&copied).unwrap(), prepared);
+
+            let baseline = Preserved::read(&copied).unwrap();
+            let child = directory.then(|| Preserved::read(&copied.join("child")).unwrap());
+            let restored = root.path().join("restored");
+            renamore::rename_exclusive(&copied, &restored).unwrap();
+            baseline.changed(&restored).unwrap();
+            if let Some(child) = child {
+                child.changed(&restored.join("child")).unwrap();
+            }
+        }
+    }
+
+    fn cross_volumes() -> Option<(TempDir, TempDir)> {
+        let Some(other) = std::env::var_os("UNMV_TEST_VOLUME") else {
+            assert!(std::env::var_os("UNMV_REQUIRE_CROSS_VOLUME_TESTS").is_none());
+            eprintln!("cross-volume test unavailable: set UNMV_TEST_VOLUME to a second filesystem");
+            return None;
+        };
+        let root = TempDir::new().unwrap();
+        let moved = TempDir::new_in(other).unwrap();
+        assert_ne!(volume(root.path()).unwrap(), volume(moved.path()).unwrap());
+        Some((root, moved))
+    }
+
+    fn rename_plan(restored: &Path, source: &Path) -> Plan {
+        let Inference::Certain(plan) = crate::infer(
+            &[restored.to_owned(), source.to_owned()],
+            Some(Mode::Rename),
+            None,
+        )
+        .unwrap() else {
+            panic!("explicit rename was ambiguous");
+        };
+        plan
+    }
+
+    fn no_staging(root: &Path) {
+        assert!(fs::read_dir(root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".unmv-")
+        }));
+    }
+
+    #[test]
+    fn inherited_dacl_changes_require_metadata_authorization() {
+        let Some((root, moved)) = cross_volumes() else {
+            return;
+        };
+        let source = moved.path().join("source");
+        let restored = root.path().join("restored");
+        fs::write(&source, "payload").unwrap();
+        assert!(!read_security(&source).unwrap().protected);
+        let plan = rename_plan(&restored, &source);
+        let mut options = ExecutionOptions {
+            allow_cross_volume_delete: true,
+            allow_metadata_loss: false,
+        };
+        let error = crate::execute(&plan, options, &Cancellation::default(), |_| {
+            panic!("metadata-loss refusal must precede confirmation");
+        })
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("--allow-metadata-loss"));
+        if plan.losses.is_empty() {
+            // Audit-privileged callers reach the staging gate directly.
+            assert!(error.contains("DACL inheritance protection"), "{error}");
+        }
+        assert!(!restored.exists());
+        assert_eq!(fs::read_to_string(&source).unwrap(), "payload");
+        no_staging(root.path());
+
+        options.allow_metadata_loss = true;
+        let mut confirmed = false;
+        crate::execute(&plan, options, &Cancellation::default(), |summary| {
+            assert!(
+                summary
+                    .losses
+                    .iter()
+                    .any(|loss| loss.contains("DACL inheritance protection"))
+            );
+            assert!(!restored.exists());
+            assert!(source.exists());
+            confirmed = true;
+            Ok(true)
+        })
+        .unwrap();
+        assert!(confirmed);
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(&restored).unwrap(), "payload");
+        no_staging(root.path());
+    }
+
+    #[test]
+    fn later_dacl_changes_keep_originals_even_with_metadata_authorization() {
+        for before_delete in [false, true] {
+            for change_permissions in [false, true] {
+                let Some((root, moved)) = cross_volumes() else {
+                    return;
+                };
+                let source = moved.path().join("source");
+                let restored = root.path().join("restored");
+                fs::write(&source, "payload").unwrap();
+                let original_acl = read_security(&source).unwrap();
+                let mut changed = false;
+                let error = crate::execute_with(
+                    &rename_plan(&restored, &source),
+                    ExecutionOptions {
+                        allow_cross_volume_delete: true,
+                        allow_metadata_loss: true,
+                    },
+                    &Cancellation::default(),
+                    |_| Ok(true),
+                    |event| {
+                        let path = match event {
+                            Event::AfterPublish { to } if !before_delete => to,
+                            Event::BeforeDelete { restored, .. } if before_delete => restored,
+                            _ => return Ok(()),
+                        };
+                        let before = read_security(&path)?;
+                        let mut edited = before.clone();
+                        if change_permissions {
+                            let mut entry = ptr::null_mut();
+                            ensure!(
+                                unsafe {
+                                    GetAce(edited.dacl.words.as_mut_ptr().cast(), 0, &mut entry)
+                                } != 0
+                            );
+                            let entry = unsafe { &mut *entry.cast::<ACCESS_ALLOWED_ACE>() };
+                            ensure!(
+                                entry.Header.AceType == 0,
+                                "fixture requires an access-allowed ACE"
+                            );
+                            entry.Mask ^= FILE_WRITE_EA;
+                        } else {
+                            edited.protected = false;
+                        }
+                        apply_security(&path, &edited)?;
+                        assert_ne!(read_security(&path)?, before);
+                        changed = true;
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert!(changed, "ACL edit must reach its observation point");
+                assert!(
+                    format!("{error:#}").contains("metadata or streams changed"),
+                    "{error:#}"
+                );
+                assert_eq!(read_security(&source).unwrap(), original_acl);
+                assert_eq!(fs::read_to_string(&source).unwrap(), "payload");
+                assert_eq!(fs::read_to_string(&restored).unwrap(), "payload");
+                no_staging(root.path());
+            }
+        }
+    }
 }

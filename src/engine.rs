@@ -97,6 +97,22 @@ pub fn execute_with(
                 }));
                 platform::sync_entry(&copied)?;
             }
+            #[cfg(windows)]
+            {
+                platform::prepare_publication(&stage.entry)?;
+                // Setting a directory's DACL can propagate ACEs to children.
+                // Verify the final metadata of the entire tree before recording
+                // its baseline or accepting any metadata-loss authorization.
+                for node in &action.nodes {
+                    let copied = platform::entry_at(&stage.entry, &node.relative);
+                    losses.extend(node.metadata.verify(&copied).into_iter().map(|loss| {
+                        format!(
+                            "{:?}: {loss}",
+                            platform::entry_at(&action.from, &node.relative)
+                        )
+                    }));
+                }
+            }
             // Remember the actual copies, including any explicitly authorized
             // metadata differences. Later changes are not covered by that waiver.
             for node in &action.nodes {

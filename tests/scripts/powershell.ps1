@@ -4,7 +4,7 @@ Set-Location -LiteralPath $Root
 # Import the cmdlet exactly as an original successful Move-Item would.
 Set-Content -LiteralPath 'a space' -Value 'payload'
 Microsoft.PowerShell.Management\Move-Item -LiteralPath 'a space' -Destination 'b space'
-Set-Alias -Name mv -Value Move-Item
+Set-Alias -Name mv -Value Move-Item -Option AllScope
 . ./helper.ps1
 unmv 'a space' 'b space'
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath 'a space')) { throw 'literal path round trip failed' }
@@ -28,7 +28,7 @@ unmv --mv-kind=powershell third,fourth destination
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path third) -or -not (Test-Path fourth)) { throw 'explicit override array handling failed' }
 # FileSystem PSDrives should resolve even when the original source is missing.
 Remove-Item Function:mv
-Set-Alias -Name mv -Value Move-Item
+Set-Alias -Name mv -Value Move-Item -Option AllScope
 New-PSDrive -Name UnmvTest -PSProvider FileSystem -Root $Root | Out-Null
 Set-Content -LiteralPath 'drive source' -Value 'drive payload'
 mv 'UnmvTest:\drive source' 'UnmvTest:\drive destination'

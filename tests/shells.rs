@@ -242,7 +242,7 @@ fn powershell_helper_defaults_allow_one_off_modes() {
                 .unwrap());
             fs::write(root.path().join("helper.ps1"), helper.stdout).unwrap();
             let script = format!(
-                "Set-Alias -Name mv -Value Move-Item\n. ./helper.ps1\n{invocation}\nexit $LASTEXITCODE"
+                "$ErrorActionPreference = 'Stop'\nSet-Alias -Name mv -Value Move-Item -Option AllScope\n. ./helper.ps1\n{invocation}\nexit $LASTEXITCODE"
             );
             let output = Command::new(shell)
                 .args(["-NoLogo", "-NoProfile", "-Command", &script])

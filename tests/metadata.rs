@@ -271,7 +271,7 @@ fn windows_file_and_directory_data_streams_are_verified() {
         } else {
             fs::write(&b, "payload").unwrap();
         }
-        fs::write(b.with_file_name("b:unmv-test"), b"alternate\0data").unwrap();
+        fs::write(stream_path(&b, "unmv-test"), b"alternate\0data").unwrap();
         unmv::execute(
             &plan(&[a.clone(), b.clone()], Mode::Rename),
             copy_options(),
@@ -280,7 +280,7 @@ fn windows_file_and_directory_data_streams_are_verified() {
         )
         .unwrap();
         assert_eq!(
-            fs::read(a.with_file_name("a:unmv-test")).unwrap(),
+            fs::read(stream_path(&a, "unmv-test")).unwrap(),
             b"alternate\0data"
         );
         assert!(!b.exists());
@@ -296,7 +296,7 @@ fn windows_missing_stream_payload_is_never_metadata_loss() {
     };
     let b = write(moved.path(), "b", "payload");
     let a = root.path().join("a");
-    fs::write(b.with_file_name("b:unmv-test"), b"alternate data").unwrap();
+    fs::write(stream_path(&b, "unmv-test"), b"alternate data").unwrap();
     let result = unmv::execute_with(
         &plan(&[a.clone(), b.clone()], Mode::Rename),
         copy_options(),
@@ -304,7 +304,7 @@ fn windows_missing_stream_payload_is_never_metadata_loss() {
         |_| Ok(true),
         |event| {
             if let Event::AfterCopy { staged, .. } = event {
-                fs::remove_file(staged.with_file_name("entry:unmv-test"))?;
+                fs::remove_file(stream_path(&staged, "unmv-test"))?;
             }
             Ok(())
         },
@@ -312,7 +312,7 @@ fn windows_missing_stream_payload_is_never_metadata_loss() {
     assert!(result.is_err());
     assert!(!a.exists());
     assert_eq!(
-        fs::read(b.with_file_name("b:unmv-test")).unwrap(),
+        fs::read(stream_path(&b, "unmv-test")).unwrap(),
         b"alternate data"
     );
     no_staging(root.path());

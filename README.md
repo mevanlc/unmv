@@ -168,6 +168,13 @@ enable privileges. macOS resource forks and Windows alternate data streams are
 payload: missing or differing contents cannot be waived as metadata loss.
 Resource forks on non-regular macOS entries are refused.
 
+Windows cross-volume restores protect the restored root's DACL and convert
+inherited entries to explicit entries while still in staging, so publication
+does not change the verified ACL. ACE order, permissions, and propagation flags
+are retained. Differences from the original ACL inheritance are reported before
+publication and require `--allow-metadata-loss`. Later ACL changes still stop
+original-file deletion, even with that authorization.
+
 Inode identity, change/creation times, sparse allocation, compression layout,
 and other filesystem storage details are not promised across volumes. Windows
 flushes file data but has no general directory fsync equivalent here.

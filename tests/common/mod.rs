@@ -54,6 +54,15 @@ pub fn write(root: &Path, name: &str, value: &str) -> PathBuf {
     path
 }
 
+#[cfg(windows)]
+pub fn stream_path(path: &Path, stream: &str) -> PathBuf {
+    // A filename like "b:stream" is a drive-relative path on Windows.
+    let mut path = path.as_os_str().to_os_string();
+    path.push(":");
+    path.push(stream);
+    PathBuf::from(path)
+}
+
 pub fn cross_volumes() -> Option<(TempDir, TempDir)> {
     let root = TempDir::new().unwrap();
     let other = std::env::var_os("UNMV_TEST_VOLUME")
