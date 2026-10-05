@@ -21,6 +21,13 @@ pub enum Shell {
     Pwsh,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum DefaultPromptAnswer {
+    Guess,
+    #[default]
+    Cancel,
+}
+
 #[derive(Debug)]
 pub struct Context {
     pub kind: Option<MvKind>,
@@ -164,7 +171,11 @@ fn identify(path: &Path) -> Option<MvKind> {
     }
 }
 
-pub fn shell_integration(shell: Shell, output: &mut impl Write) -> Result<()> {
+pub fn shell_integration(
+    shell: Shell,
+    default_prompt_answer: DefaultPromptAnswer,
+    output: &mut impl Write,
+) -> Result<()> {
     let executable = env::current_exe()?;
     let executable = executable
         .to_str()
@@ -182,7 +193,13 @@ pub fn shell_integration(shell: Shell, output: &mut impl Write) -> Result<()> {
         Shell::Pwsh => format!("'{}'", executable.replace('\'', "''")),
         _ => format!("'{}'", executable.replace('\'', "'\\''")),
     };
-    let source = template.replace("@UNMV_BIN@", &quoted);
+    let default_prompt_answer = match default_prompt_answer {
+        DefaultPromptAnswer::Cancel => "cancel",
+        DefaultPromptAnswer::Guess => "guess",
+    };
+    let source = template
+        .replace("@UNMV_DEFAULT_PROMPT_ANSWER@", default_prompt_answer)
+        .replace("@UNMV_BIN@", &quoted);
     match output.write_all(source.as_bytes()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),

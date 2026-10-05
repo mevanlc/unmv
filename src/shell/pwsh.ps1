@@ -57,7 +57,7 @@ function global:unmv {
             $unmvValue = $unmvArguments[$unmvIndex]
             if ($unmvSkipValue) { $unmvSkipValue = $false; continue }
             if (-not $unmvLiteral -and $unmvValue -eq '--') { $unmvLiteral = $true; continue }
-            if (-not $unmvLiteral -and $unmvValue -match '^--(?:mode|mv-kind|shell-integration)$') { $unmvSkipValue = $true; continue }
+            if (-not $unmvLiteral -and $unmvValue -match '^--(?:mode|mv-kind|shell-integration|default-prompt-answer)$') { $unmvSkipValue = $true; continue }
             if (-not $unmvLiteral -and $unmvValue.StartsWith('-')) { continue }
             $unmvProvider = $null
             $unmvDrive = $null
@@ -80,6 +80,7 @@ function global:unmv {
     $unmvStart.EnvironmentVariables['UNMV_CONTEXT_TYPE'] = $unmvType
     $unmvStart.EnvironmentVariables['UNMV_CONTEXT_COMMAND'] = $unmvCommand
     $unmvStart.EnvironmentVariables['UNMV_CONTEXT_DESCRIPTION'] = $unmvDescription
+    $unmvStart.EnvironmentVariables['UNMV_DEFAULT_PROMPT_ANSWER'] = '@UNMV_DEFAULT_PROMPT_ANSWER@'
     if ($null -ne $unmvStart.PSObject.Properties['ArgumentList']) {
         foreach ($unmvArgument in $unmvArguments) { $unmvStart.ArgumentList.Add($unmvArgument) }
     } else {

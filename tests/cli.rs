@@ -11,7 +11,18 @@ fn help_version_and_argument_errors_are_consistent() {
     assert!(text.contains("SOURCE"));
     assert!(text.contains("--allow-cross-volume-delete"));
     ok(command(root.path()).arg("--version").output().unwrap());
-    for args in [vec![], vec!["a"], vec!["--mode", "rename", "a", "c", "b"]] {
+    for args in [
+        vec![],
+        vec!["a"],
+        vec!["--mode", "rename", "a", "c", "b"],
+        vec![
+            "--shell-integration",
+            "zsh",
+            "--default-prompt-answer",
+            "rename",
+        ],
+        vec!["--shell-integration", "zsh", "--dry-run"],
+    ] {
         assert_eq!(
             command(root.path())
                 .args(args)
@@ -26,25 +37,32 @@ fn help_version_and_argument_errors_are_consistent() {
 
 #[test]
 fn dry_run_and_execution_use_the_same_plan() {
-    let root = TempDir::new().unwrap();
-    write(root.path(), "b", "payload");
-    let preview = ok(command(root.path())
-        .args(["--dry-run", "a", "b"])
-        .output()
-        .unwrap());
-    assert!(
-        String::from_utf8(preview.stdout)
-            .unwrap()
-            .contains("rename")
-    );
-    assert!(!root.path().join("a").exists());
-    assert!(root.path().join("b").exists());
-    let output = ok(command(root.path()).args(["a", "b"]).output().unwrap());
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        fs::read_to_string(root.path().join("a")).unwrap(),
-        "payload"
-    );
+    for mode_args in [vec![], vec!["--default-prompt-answer", "guess"]] {
+        let root = TempDir::new().unwrap();
+        write(root.path(), "b", "payload");
+        let preview = ok(command(root.path())
+            .args(&mode_args)
+            .args(["--dry-run", "a", "b"])
+            .output()
+            .unwrap());
+        assert!(
+            String::from_utf8(preview.stdout)
+                .unwrap()
+                .contains("rename")
+        );
+        assert!(!root.path().join("a").exists());
+        assert!(root.path().join("b").exists());
+        let output = ok(command(root.path())
+            .args(mode_args)
+            .args(["a", "b"])
+            .output()
+            .unwrap());
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            fs::read_to_string(root.path().join("a")).unwrap(),
+            "payload"
+        );
+    }
 }
 
 #[test]
@@ -57,17 +75,35 @@ fn ambiguity_requires_a_choice_even_with_yes_or_piped_input() {
         vec!["a", "b"],
         vec!["--yes", "a", "b"],
         vec!["--dry-run", "a", "b"],
+        vec!["--default-prompt-answer", "cancel", "a", "b"],
+        vec!["--default-prompt-answer", "guess", "a", "b"],
+        vec!["--default-prompt-answer", "guess", "--yes", "a", "b"],
+        vec!["--default-prompt-answer", "guess", "--dry-run", "a", "b"],
     ] {
+        let guessing = args.contains(&"guess");
         let output = command(root.path()).args(args).output().unwrap();
         assert_eq!(output.status.code(), Some(1));
-        assert!(
-            String::from_utf8(output.stderr)
-                .unwrap()
-                .contains("more than one undo")
-        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("more than one undo"));
+        assert_eq!(stderr.contains("suggested default"), guessing);
         assert!(!root.path().join("a").exists());
+        assert_eq!(fs::read_to_string(b.join("a")).unwrap(), "payload");
     }
+    let output = command(root.path())
+        .env("UNMV_DEFAULT_PROMPT_ANSWER", "guess")
+        .args(["--default-prompt-answer", "cancel", "a", "b"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("suggested default")
+    );
+    assert!(!root.path().join("a").exists());
+    assert_eq!(fs::read_to_string(b.join("a")).unwrap(), "payload");
     ok(command(root.path())
+        .env("UNMV_DEFAULT_PROMPT_ANSWER", "guess")
         .args(["--mode", "into-dir", "a", "b"])
         .output()
         .unwrap());
@@ -222,15 +258,30 @@ fn actual_directory_rename_to_a_trailing_separator_remains_ambiguous() {
 fn emitted_helpers_work_without_path_operands() {
     let root = TempDir::new().unwrap();
     for shell in ["bash", "zsh", "pwsh"] {
-        let output = ok(command(root.path())
+        let default = ok(command(root.path())
             .args(["--shell-integration", shell])
             .output()
             .unwrap());
-        assert!(
-            String::from_utf8(output.stdout)
-                .unwrap()
-                .contains("UNMV_CONTEXT")
-        );
-        assert!(output.stderr.is_empty());
+        assert!(default.stderr.is_empty());
+        for mode in ["cancel", "guess"] {
+            let output = ok(command(root.path())
+                .args([
+                    "--shell-integration",
+                    shell,
+                    "--default-prompt-answer",
+                    mode,
+                ])
+                .output()
+                .unwrap());
+            if mode == "cancel" {
+                assert_eq!(output.stdout, default.stdout);
+            }
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains("UNMV_CONTEXT")
+            );
+            assert!(output.stderr.is_empty());
+        }
     }
 }

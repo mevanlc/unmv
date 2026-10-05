@@ -7,6 +7,16 @@ use tempfile::TempDir;
 
 #[cfg(unix)]
 fn shell_test(shell: &str, setup: &str, invocation: &str) -> Option<std::process::Output> {
+    shell_test_with_default(shell, None, setup, invocation)
+}
+
+#[cfg(unix)]
+fn shell_test_with_default(
+    shell: &str,
+    default_prompt_answer: Option<&str>,
+    setup: &str,
+    invocation: &str,
+) -> Option<std::process::Output> {
     if Command::new(shell)
         .arg("--version")
         .stdout(Stdio::null())
@@ -18,10 +28,12 @@ fn shell_test(shell: &str, setup: &str, invocation: &str) -> Option<std::process
     }
     let root = TempDir::new().unwrap();
     write(root.path(), "b space", "payload");
-    let helper = ok(command(root.path())
-        .args(["--shell-integration", shell])
-        .output()
-        .unwrap());
+    let mut generator = command(root.path());
+    generator.args(["--shell-integration", shell]);
+    if let Some(mode) = default_prompt_answer {
+        generator.args(["--default-prompt-answer", mode]);
+    }
+    let helper = ok(generator.output().unwrap());
     let helper_path = root.path().join("helper");
     fs::write(&helper_path, helper.stdout).unwrap();
     let options = if shell == "bash" {
@@ -35,6 +47,7 @@ fn shell_test(shell: &str, setup: &str, invocation: &str) -> Option<std::process
         .arg(script)
         .current_dir(root.path())
         .env_remove("UNMV_CONTEXT_TYPE")
+        .env_remove("UNMV_DEFAULT_PROMPT_ANSWER")
         .env_remove("BASH_ENV")
         .output()
         .unwrap();
@@ -52,6 +65,52 @@ fn shell_test(shell: &str, setup: &str, invocation: &str) -> Option<std::process
         );
     }
     Some(output)
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_and_zsh_helper_defaults_allow_one_off_modes() {
+    for shell in ["bash", "zsh"] {
+        for (default_prompt_answer, invocation) in [
+            ("guess", "unmv 'a space' 'b space'"),
+            ("cancel", "unmv 'a space' 'b space'"),
+            (
+                "cancel",
+                "unmv --default-prompt-answer guess 'a space' 'b space'",
+            ),
+            (
+                "cancel",
+                "unmv --default-prompt-answer=guess 'a space' 'b space'",
+            ),
+            ("cancel", "unmv --mode rename 'a space' 'b space'"),
+            ("guess", "unmv --mode rename 'a space' 'b space'"),
+        ] {
+            let Some(output) =
+                shell_test_with_default(shell, Some(default_prompt_answer), "", invocation)
+            else {
+                continue;
+            };
+            assert!(
+                output.status.success(),
+                "{shell} default {default_prompt_answer}, {invocation}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let invocation = format!(
+            "unmv --shell-integration {shell} --default-prompt-answer guess > ./new-helper\nsource ./new-helper\nunmv 'a space' 'b space'"
+        );
+        if let Some(output) = shell_test_with_default(shell, Some("cancel"), "", &invocation) {
+            ok(output);
+        }
+        if let Some(output) = shell_test_with_default(
+            shell,
+            Some("cancel"),
+            "export UNMV_DEFAULT_PROMPT_ANSWER=parent",
+            "unmv --default-prompt-answer guess 'a space' 'b space'\n[[ $UNMV_DEFAULT_PROMPT_ANSWER == parent ]]",
+        ) {
+            ok(output);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -135,6 +194,72 @@ fn powershell_helper_resolves_cmdlets_arrays_and_shadowing() {
             .arg(root.path())
             .output()
             .unwrap());
+    }
+    if !ran {
+        eprintln!("PowerShell runtime unavailable; add pwsh to PATH to exercise this helper");
+    }
+}
+
+#[test]
+fn powershell_helper_defaults_allow_one_off_modes() {
+    let mut ran = false;
+    for shell in ["pwsh", "powershell"] {
+        if shell == "powershell" && !cfg!(windows) {
+            continue;
+        }
+        if !Command::new(shell)
+            .args(["-NoProfile", "-Command", "exit 0"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            continue;
+        }
+        ran = true;
+        for (default_prompt_answer, invocation) in [
+            ("guess", "unmv 'a space' 'b space'"),
+            ("cancel", "unmv 'a space' 'b space'"),
+            (
+                "cancel",
+                "unmv --default-prompt-answer guess 'a space' 'b space'",
+            ),
+            (
+                "cancel",
+                "unmv --default-prompt-answer=guess 'a space' 'b space'",
+            ),
+            ("cancel", "unmv --mode rename 'a space' 'b space'"),
+            ("guess", "unmv --mode rename 'a space' 'b space'"),
+        ] {
+            let root = TempDir::new().unwrap();
+            write(root.path(), "b space", "payload");
+            let helper = ok(command(root.path())
+                .args([
+                    "--shell-integration",
+                    "pwsh",
+                    "--default-prompt-answer",
+                    default_prompt_answer,
+                ])
+                .output()
+                .unwrap());
+            fs::write(root.path().join("helper.ps1"), helper.stdout).unwrap();
+            let script = format!(
+                "Set-Alias -Name mv -Value Move-Item\n. ./helper.ps1\n{invocation}\nexit $LASTEXITCODE"
+            );
+            let output = Command::new(shell)
+                .args(["-NoLogo", "-NoProfile", "-Command", &script])
+                .current_dir(root.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{shell} default {default_prompt_answer}, {invocation}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fs::read_to_string(root.path().join("a space")).unwrap(),
+                "payload"
+            );
+            assert!(!root.path().join("b space").exists());
+        }
     }
     if !ran {
         eprintln!("PowerShell runtime unavailable; add pwsh to PATH to exercise this helper");

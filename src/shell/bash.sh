@@ -4,6 +4,7 @@ function unmv() (
     local -a unmv_words
     export UNMV_CONTEXT_SHELL=bash UNMV_CONTEXT_TYPE=unknown
     export UNMV_CONTEXT_COMMAND='' UNMV_CONTEXT_DESCRIPTION=''
+    export UNMV_DEFAULT_PROMPT_ANSWER='@UNMV_DEFAULT_PROMPT_ANSWER@'
     for ((unmv_depth=0; unmv_depth<16; unmv_depth++)); do
         unmv_type=$(builtin type -t -- "$unmv_name" 2>/dev/null)
         if [[ $unmv_type == alias ]]; then

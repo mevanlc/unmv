@@ -31,6 +31,7 @@ pub fn command(root: &Path) -> Command {
         "UNMV_CONTEXT_TYPE",
         "UNMV_CONTEXT_COMMAND",
         "UNMV_CONTEXT_DESCRIPTION",
+        "UNMV_DEFAULT_PROMPT_ANSWER",
     ] {
         command.env_remove(name);
     }

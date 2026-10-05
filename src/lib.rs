@@ -5,9 +5,9 @@ mod engine;
 mod plan;
 mod platform;
 
-pub use context::{Context, Shell, shell_integration};
+pub use context::{Context, DefaultPromptAnswer, Shell, shell_integration};
 pub use engine::{Event, ExecutionOptions, Summary, execute, execute_with};
-pub use plan::{Action, Inference, Mode, MvKind, Plan, infer};
+pub use plan::{Action, Inference, Mode, MvKind, Plan, Suggestion, infer};
 
 use std::sync::{
     Arc,

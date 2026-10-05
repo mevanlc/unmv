@@ -55,6 +55,58 @@ fn directory_with_matching_child_requires_interpretation() {
 }
 
 #[test]
+fn guess_suggests_a_matching_file_or_symlink_but_not_a_directory() {
+    for entry in ["file", "symlink", "directory"] {
+        let root = TempDir::new().unwrap();
+        let a = root.path().join("a");
+        let b = root.path().join("b");
+        fs::create_dir(&b).unwrap();
+        match entry {
+            "file" => {
+                write(&b, "a", "payload");
+            }
+            "symlink" => symlink(std::path::Path::new("missing"), &b.join("a")),
+            "directory" => fs::create_dir(b.join("a")).unwrap(),
+            _ => unreachable!(),
+        }
+        let inference = unmv::infer(&[a.clone(), b.clone()], None, None).unwrap();
+        let suggestion = inference.suggestion();
+        let Inference::Ambiguous(plans) = inference else {
+            panic!("guess must retain both plausible interpretations");
+        };
+        if entry == "directory" {
+            assert!(suggestion.is_none());
+        } else {
+            let suggestion = suggestion.expect("matching leaf should have a suggestion");
+            assert_eq!(plans[suggestion.index].mode, Mode::IntoDir);
+            run(&plans[suggestion.index]).unwrap();
+            assert!(b.is_dir());
+            assert!(fs::symlink_metadata(b.join("a")).is_err());
+            if entry == "file" {
+                assert_eq!(fs::read_to_string(a).unwrap(), "payload");
+            } else {
+                assert_eq!(fs::read_link(a).unwrap(), std::path::Path::new("missing"));
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn guess_does_not_prefer_a_child_reached_through_a_symlink_container() {
+    let root = TempDir::new().unwrap();
+    let actual = root.path().join("actual");
+    let b = root.path().join("b");
+    fs::create_dir(&actual).unwrap();
+    write(&actual, "a", "payload");
+    symlink(&actual, &b);
+    let inference = unmv::infer(&[root.path().join("a"), b.clone()], None, None).unwrap();
+    assert!(inference.suggestion().is_none());
+    assert!(matches!(inference, Inference::Ambiguous(_)));
+    assert_eq!(fs::read_link(b).unwrap(), actual);
+}
+
+#[test]
 fn trailing_destination_separator_does_not_prove_a_container_existed() {
     let root = TempDir::new().unwrap();
     let a = root.path().join("a");
@@ -120,6 +172,7 @@ fn restores_multiple_sources_to_their_original_parents() {
     else {
         panic!()
     };
+    assert_eq!(plan.mode, Mode::IntoDir);
     run(&plan).unwrap();
     assert_eq!(fs::read_to_string(a).unwrap(), "one");
     assert_eq!(fs::read_to_string(c).unwrap(), "two");

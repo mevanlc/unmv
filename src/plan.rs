@@ -29,6 +29,41 @@ pub enum Inference {
     Ambiguous(Vec<Plan>),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Suggestion {
+    pub index: usize,
+    pub reason: &'static str,
+}
+
+impl Inference {
+    /// Propose a default for an interactive choice, without resolving ambiguity.
+    pub fn suggestion(&self) -> Option<Suggestion> {
+        let Self::Ambiguous(plans) = self else {
+            return None;
+        };
+        if plans.len() != 2 {
+            return None;
+        }
+        let rename = plans.iter().find(|plan| plan.mode == Mode::Rename)?;
+        let [renamed] = rename.actions.as_slice() else {
+            return None;
+        };
+        if renamed.root.kind != Kind::Directory {
+            return None;
+        }
+        let index = plans.iter().position(|plan| {
+            let [moved] = plan.actions.as_slice() else {
+                return false;
+            };
+            plan.mode == Mode::IntoDir && matches!(moved.root.kind, Kind::File | Kind::Symlink)
+        })?;
+        Some(Suggestion {
+            index,
+            reason: "a matching file or symlink is inside the destination directory",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct Plan {
     pub mode: Mode,
@@ -89,6 +124,7 @@ impl Plan {
 
 /// Infer candidate undos, validating every member of each candidate batch.
 /// Authorization flags are deliberately excluded: they must not bias inference.
+/// With no explicit mode, all plausible interpretations are considered.
 pub fn infer(paths: &[PathBuf], mode: Option<Mode>, kind: Option<MvKind>) -> Result<Inference> {
     ensure!(
         paths.len() >= 2,
@@ -149,7 +185,7 @@ pub fn infer(paths: &[PathBuf], mode: Option<Mode>, kind: Option<MvKind>) -> Res
     }
     if candidates.len() == 1 && !blocked.is_empty() && mode.is_none() {
         bail!(
-            "another interpretation is plausible but cannot be safely restored; choose --mode explicitly instead of inferring from a preflight failure:\n{}",
+            "another interpretation is plausible but cannot be safely restored; choose --mode rename or --mode into-dir instead of inferring from a preflight failure:\n{}",
             blocked.join("\n")
         );
     }

@@ -37,16 +37,27 @@ beginning with a dash.
 
 ```sh
 unmv old-name new-name
+unmv --default-prompt-answer guess old-name new-name
 unmv first second destination-directory
 unmv --dry-run 'old name' 'new name'
 unmv -- 'old name' '-new-name'
 ```
 
-For one source, `unmv` considers both a rename (`b` back to `a`) and a move into
-an existing directory (`b/a` back to `a`). A single plausible, safe interpretation
+For one source, `unmv` considers both a rename (`b` back to `a`) and a move into an
+existing directory (`b/a` back to `a`). A single plausible, safe interpretation
 runs automatically. If both are plausible, an interactive terminal presents an
-explicit choice; Enter cancels. Select a mode for scripts or when interpretation
-cannot be determined safely:
+explicit choice; Enter cancels by default.
+
+With `--default-prompt-answer guess`, the prompt suggests moving a matching file
+or symlink out of a plain destination directory. It labels the suggestion,
+explains the reason, and accepts it on Enter. Select the other number to override
+it, or type `q` to cancel. This is a heuristic: the alternative interpretation
+remains possible.
+When the matching child is a directory or the destination is a symlink, no
+default is proposed and Enter cancels.
+
+Select an interpretation for scripts or when inference cannot determine a safe
+undo:
 
 ```sh
 unmv --mode rename a b
@@ -56,17 +67,18 @@ unmv --mode into-dir a b
 Multiple sources require a directory container. A trailing destination separator
 can mean either a plain directory rename or a directory container for BSD/GNU
 moves; it does not resolve that ambiguity. If one plausible interpretation fails
-preflight, `unmv` requires an explicit mode rather than
+preflight, `unmv` requires `--mode rename` or `--mode into-dir` rather than
 silently choosing the other.
 
 | Option | Purpose |
 | --- | --- |
 | `--dry-run` | Preview operations and required flags; never prompt or modify files. Ambiguous previews show both choices and exit unsuccessfully. |
 | `--mode rename\|into-dir` | Select the original move's interpretation. `rename` accepts one source. |
+| `--default-prompt-answer guess\|cancel` | Set Enter's default at ambiguous undo prompts. `guess` proposes a reasonable interpretation when available; `cancel` is the default. |
 | `--mv-kind bsd\|gnu\|powershell` | Explicitly choose move semantics when shell inspection cannot recognize the command. |
 | `--allow-cross-volume-delete` | Authorize verified copies followed by permanent deletion of copied originals. |
 | `--allow-metadata-loss` | Permit specifically reported metadata or hard-link preservation losses. |
-| `--yes` | Skip cross-volume confirmation. Required risk flags and ambiguity resolution still apply. |
+| `--yes` | Skip cross-volume confirmation. Required risk flags and explicit ambiguity resolution still apply; it never accepts a guess. |
 | `--shell-integration bash\|zsh\|pwsh` | Print an optional shell helper. |
 
 Successful same-volume execution is silent on stdout. Selected previews go to
@@ -95,6 +107,9 @@ eval "$(unmv --shell-integration bash)"
 
 # Zsh
 eval "$(unmv --shell-integration zsh)"
+
+# Zsh with a suggested default at ambiguous undo prompts
+eval "$(unmv --shell-integration zsh --default-prompt-answer guess)"
 ```
 
 ```powershell
@@ -105,6 +120,18 @@ unmv --shell-integration pwsh | Out-String | Invoke-Expression
 Helpers install only an `unmv` function. They do not edit shell profiles or wrap
 `mv`, and capture the executable's current absolute path. In PowerShell, they
 also resolve FileSystem PSDrive paths and source arrays for `Move-Item`.
+
+Use `--default-prompt-answer guess` with `--shell-integration` to give future
+calls a suggested answer at ambiguous undo prompts. Omitting the option sets
+the helper's default to `cancel`. An explicit `--default-prompt-answer` overrides
+the helper's preference for that invocation. An explicit `--mode` selects the
+interpretation directly:
+
+```sh
+unmv --default-prompt-answer cancel a b  # Enter cancels for this invocation
+unmv --default-prompt-answer guess a b   # Enter accepts a reasonable suggestion
+unmv --mode into-dir a b  # explicitly undo a move into a directory
+```
 
 ## Filesystem behavior
 
